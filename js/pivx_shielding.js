@@ -142,9 +142,10 @@ export default class PIVXShielding {
    * Createes a transaction, sending `amount` satoshis to the address
    * @param {{address: String, amount: Number}} target
    */
-  createTransaction({address, amount, blockHeight}) {
+  createTransaction({address, amount, blockHeight, useShieldInputs = true}) {
     const { txid, txhex, nullifiers } = this.shieldMan.create_transaction({
-      notes: this.unspentNotes,
+      notes: useShieldInputs ? this.unspentNotes : null,
+      utxos: useShieldInputs ? null : this.utxos,
       extsk: this.extsk,
       to_address: address,
       change_address: this.getNewAddress(),
@@ -201,11 +202,16 @@ export default class PIVXShielding {
    * @param {Number} o.vout - output index of the UTXO
    * @param {Number} o.amount - Value in satoshi of the UTXO
    * @param {String} o.privateKey - Private key associated to the UTXO
+   * @param {Uint8Array} o.script - Tx Script
    */
   addUTXO({txid, vout, amount, privateKey, script}) {
     const wifBytes = bs58.decode(privateKey);
     this.utxos.push({
-      txid, vout, amount, wifBytes, script,
+      txid,
+      vout,
+      amount,
+      private_key: wifBytes.slice(1, 33),
+      script,
     });
   }
 }
