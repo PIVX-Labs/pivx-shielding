@@ -202,10 +202,10 @@ export default class PIVXShielding {
    * @param {Number} o.amount - Value in satoshi of the UTXO
    * @param {String} o.privateKey - Private key associated to the UTXO
    */
-  addUTXO({txid, vout, amount, privateKey}) {
+  addUTXO({txid, vout, amount, privateKey, script}) {
     const wifBytes = bs58.decode(privateKey);
     this.utxos.push({
-      txid, vout, amount, wifBytes,
+      txid, vout, amount, wifBytes, script,
     });
   }
 }
