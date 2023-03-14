@@ -1,4 +1,4 @@
-import bs58 from 'bs58';
+import bs58 from "bs58";
 
 export default class PIVXShielding {
   /**
@@ -142,7 +142,7 @@ export default class PIVXShielding {
    * Createes a transaction, sending `amount` satoshis to the address
    * @param {{address: String, amount: Number, blockHeight: Number, useShieldInputs: bool}} target
    */
-  createTransaction({address, amount, blockHeight, useShieldInputs = true}) {
+  createTransaction({ address, amount, blockHeight, useShieldInputs = true }) {
     const { txid, txhex, nullifiers } = this.shieldMan.create_transaction({
       notes: useShieldInputs ? this.unspentNotes : null,
       utxos: useShieldInputs ? null : this.utxos,
@@ -204,7 +204,7 @@ export default class PIVXShielding {
    * @param {String} o.privateKey - Private key associated to the UTXO
    * @param {Uint8Array} o.script - Tx Script
    */
-  addUTXO({txid, vout, amount, privateKey, script}) {
+  addUTXO({ txid, vout, amount, privateKey, script }) {
     const wifBytes = bs58.decode(privateKey);
     this.utxos.push({
       txid,
