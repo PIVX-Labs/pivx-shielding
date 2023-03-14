@@ -21,11 +21,11 @@ pub use pivx_primitives::zip32::AccountId;
 pub use pivx_primitives::zip32::ExtendedSpendingKey;
 pub use pivx_primitives::zip32::Scope;
 pub use pivx_proofs::prover::LocalTxProver;
+use rand_core::OsRng;
 pub use serde::{Deserialize, Serialize};
 pub use std::path::Path;
 pub use std::{collections::HashMap, error::Error, io::Cursor};
 pub use wasm_bindgen::prelude::*;
-
 mod test;
 
 static PROVER: Lazy<LocalTxProver> = Lazy::new(|| {
@@ -159,21 +159,43 @@ pub struct JSTransaction {
     pub nullifiers: Vec<String>,
 }
 
-#[wasm_bindgen]
-pub fn create_transaction(
-    notes: JsValue,
-    extsk: &str,
-    to_address: &str,
-    change_address: &str,
+#[derive(Serialize, Deserialize)]
+pub struct UTXO {
+    txid: String,
+    vout: u32,
+    amount: u64,
+    private_key: Vec<u8>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct JSTxOptions {
+    notes: Option<Vec<(Note, String)>>,
+    utxos: Option<Vec<UTXO>>,
+    extsk: String,
+    to_address: String,
+    change_address: String,
     amount: u64,
     block_height: u32,
     is_testnet: bool,
-) -> JsValue {
+}
+
+#[wasm_bindgen]
+pub fn create_transaction(options: JsValue) -> JsValue {
+    let JSTxOptions {
+        notes,
+        extsk,
+        to_address,
+        change_address,
+        amount,
+        block_height,
+        is_testnet,
+        utxos: _,
+    } = serde_wasm_bindgen::from_value::<JSTxOptions>(options).expect("Cannot deserialize notes");
+    let mut notes = notes.expect("Notes are required in create_shield_transaction");
+
     // Note, witness
-    let mut notes =
-        serde_wasm_bindgen::from_value::<Vec<(Note, String)>>(notes).expect("Cannot deserialize notes");
     notes.sort_by_key(|(note, _)| note.value().inner());
-    let extsk = decode_extsk(extsk, is_testnet);
+    let extsk = decode_extsk(&extsk, is_testnet);
     let network = if is_testnet {
         Network::TestNetwork
     } else {
@@ -182,8 +204,8 @@ pub fn create_transaction(
     let result = create_transaction_internal(
         &notes,
         &extsk,
-        to_address,
-        change_address,
+        &to_address,
+        &change_address,
         amount,
         BlockHeight::from_u32(block_height),
         network,
@@ -205,11 +227,48 @@ pub fn create_transaction_internal(
     network: Network,
 ) -> Result<JSTransaction, Box<dyn Error>> {
     let mut builder = Builder::new(network, block_height);
+    let (nullifiers, change) = choose_notes(&mut builder, notes, extsk, amount)?;
+    let amount = Amount::from_u64(amount).map_err(|_| "Invalid Amount")?;
 
+    let change_address =
+        decode_payment_address(network.hrp_sapling_payment_address(), change_address)
+            .map_err(|_| "Failed to decode change address")?;
+    if to_address.starts_with(network.hrp_sapling_payment_address()) {
+        let to_address = decode_payment_address(network.hrp_sapling_payment_address(), to_address)
+            .map_err(|_| "Failed to decode sending address")?;
+        builder
+            .add_sapling_output(None, to_address, amount, MemoBytes::empty())
+            .map_err(|_| "Failed to add output")?;
+    } else {
+        let to_address = decode_transparent_address(
+            &network.b58_pubkey_address_prefix(),
+            &network.b58_script_address_prefix(),
+            to_address,
+        )?
+        .ok_or("Failed to decode transparent address")?;
+        builder
+            .add_transparent_output(&to_address, amount)
+            .map_err(|_| "Failed to add output")?;
+    }
+
+    builder
+        .add_sapling_output(None, change_address, change, MemoBytes::empty())
+        .map_err(|_| "Failed to add change")?;
+
+    prove_transaction(builder, nullifiers)
+}
+
+fn choose_notes(
+    builder: &mut Builder<Network, OsRng>,
+    notes: &[(Note, String)],
+    extsk: &ExtendedSpendingKey,
+    amount: u64,
+) -> Result<(Vec<String>, Amount), Box<dyn Error>> {
     let fee = 2365000u64;
 
     let mut total = 0;
     let mut nullifiers = vec![];
+
     for (note, witness) in notes {
         let witness = Cursor::new(hex::decode(witness)?);
         let witness = IncrementalWitness::<Node>::read(witness)?;
@@ -237,33 +296,15 @@ pub fn create_transaction_internal(
     if total < amount + fee {
         Err("Not enough balance")?;
     }
+
     let change = Amount::from_u64(total - amount - fee).map_err(|_| "Invalid change")?;
-    let amount = Amount::from_u64(amount).map_err(|_| "Invalid amount")?;
-    let change_address =
-        decode_payment_address(network.hrp_sapling_payment_address(), change_address)
-            .map_err(|_| "Failed to decode change address")?;
-    if to_address.starts_with(network.hrp_sapling_payment_address()) {
-        let to_address = decode_payment_address(network.hrp_sapling_payment_address(), to_address)
-            .map_err(|_| "Failed to decode sending address")?;
-        builder
-            .add_sapling_output(None, to_address, amount, MemoBytes::empty())
-            .map_err(|_| "Failed to add output")?;
-    } else {
-        let to_address = decode_transparent_address(
-            &network.b58_pubkey_address_prefix(),
-            &network.b58_script_address_prefix(),
-            to_address,
-        )?
-        .ok_or("Failed to decode transparent address")?;
-        builder
-            .add_transparent_output(&to_address, amount)
-            .map_err(|_| "Failed to add output")?;
-    }
+    Ok((nullifiers, change))
+}
 
-    builder
-        .add_sapling_output(None, change_address, change, MemoBytes::empty())
-        .map_err(|_| "Failed to add change")?;
-
+fn prove_transaction(
+    builder: Builder<Network, OsRng>,
+    nullifiers: Vec<String>,
+) -> Result<JSTransaction, Box<dyn Error>> {
     #[cfg(not(test))]
     return {
         let (tx, _metadata) = builder.build(
